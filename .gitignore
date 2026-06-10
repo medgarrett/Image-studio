@@ -1,0 +1,29 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.env
+.venv
+env/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Model weights
+model/*.pt
+model/*.pth
+
+# Output / temp folders
+temp/
+clasificado/
+
+# Logs
+*.json
+*.csv
+*.log
+
+# Images
+*.png
+*.jpg

@@ -1,0 +1,12 @@
+# torch y torchvision se instalan por separado via install.sh / install.bat
+# para forzar la versión CPU-only y evitar descargar paquetes CUDA (>2 GB).
+yolov5>=6.0
+opencv-python>=4.5.0
+Pillow>=8.0.0
+numpy>=1.20.0
+pandas>=1.3.0
+pytesseract>=0.3.8
+exifread>=2.3.2
+cv-algorithms>=1.0.0
+norfair>=0.3.0
+pyinstaller>=6.0

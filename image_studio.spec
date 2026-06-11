@@ -28,16 +28,10 @@ bundled_datas = [
     ('model/md_v5b.0.0.pt', 'model'),
 ]
 
-# Tesseract en Windows: descargá el instalador de
-#   https://github.com/UB-Mannheim/tesseract/wiki
-# e instalalo en C:\Program Files\Tesseract-OCR
-# Luego descomentá las líneas de abajo para bundlearlo:
-#
-# TESSERACT_DIR = r'C:\Program Files\Tesseract-OCR'
-# tess_binaries = [(os.path.join(TESSERACT_DIR, 'tesseract.exe'), 'tesseract')]
-# tess_datas    = [(os.path.join(TESSERACT_DIR, 'tessdata'), 'tessdata')]
-tess_binaries = []
-tess_datas    = []
+TESSERACT_DIR = r'C:\Program Files\Tesseract-OCR'
+tess_binaries = [(os.path.join(TESSERACT_DIR, 'tesseract.exe'), 'tesseract'),
+                 (os.path.join(TESSERACT_DIR, 'libtesseract-5.dll'), 'tesseract')]
+tess_datas    = [(os.path.join(TESSERACT_DIR, 'tessdata'), 'tessdata')]
 
 all_datas    = (torch_datas + yolo_datas + norfair_datas +
                 bundled_datas + tess_datas)

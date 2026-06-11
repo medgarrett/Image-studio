@@ -13,7 +13,7 @@ from PIL import Image
 
 from src.bundle_utils import bundled_path, resolve_config_path
 from src.detector import YOLO
-from src.processor_gui import process_folder
+from src.processor_gui import process_folder, process_videos_folder, parse_frames
 from ui.zone_canvas import ZoneCanvas
 
 # ── Paleta oscura ──────────────────────────────────────────────────────────────
@@ -29,6 +29,7 @@ _ERROR   = '#f44747'
 _HINT_BG = '#2d2d2d'
 
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
+VIDEO_EXTENSIONS = {'.avi', '.mp4', '.mov', '.mkv'}
 
 
 class MainWindow(tk.Frame):
@@ -44,6 +45,8 @@ class MainWindow(tk.Frame):
         self._iou = tk.DoubleVar(value=45)
         self._camara_id = tk.StringVar(value='')
         self._separate_folders = tk.BooleanVar(value=False)
+        self._input_mode = tk.StringVar(value='images')
+        self._video_seconds = tk.StringVar(value='')
 
         self._build_ui()
         self._load_model_async()
@@ -92,6 +95,35 @@ class MainWindow(tk.Frame):
         self._btn(sb, '📁  Seleccionar carpeta', self._select_folder).pack(fill=tk.X, padx=12, pady=2)
         self._folder_lbl = self._lbl(sb, 'Sin selección', fg=_MUTED)
         self._folder_lbl.pack(anchor='w', **pad)
+        self._sep(sb)
+
+        # fuente de entrada
+        self._lbl(sb, 'Fuente de entrada').pack(anchor='w', **pad)
+        tk.Radiobutton(sb, text='Imágenes  (JPG / PNG)',
+                       variable=self._input_mode, value='images',
+                       bg=_SIDEBAR, fg=_TEXT, selectcolor=_WIDGET,
+                       activebackground=_SIDEBAR, activeforeground=_TEXT,
+                       font=('Segoe UI', 9),
+                       command=self._on_input_mode_change).pack(anchor='w', padx=20, pady=1)
+        self._vid_radio = tk.Radiobutton(sb, text='Videos  (AVI / MP4)',
+                       variable=self._input_mode, value='videos',
+                       bg=_SIDEBAR, fg=_TEXT, selectcolor=_WIDGET,
+                       activebackground=_SIDEBAR, activeforeground=_TEXT,
+                       font=('Segoe UI', 9),
+                       command=self._on_input_mode_change)
+        self._vid_radio.pack(anchor='w', padx=20, pady=(1, 4))
+
+        # Panel de segundos — se muestra solo en modo videos
+        self._video_opts_frame = tk.Frame(sb, bg=_SIDEBAR)
+        self._lbl(self._video_opts_frame, 'Frames a extraer').pack(anchor='w', padx=12, pady=(2, 0))
+        self._lbl(self._video_opts_frame, 'Ej: 5, 100, 300  (número de frame)',
+                  fg=_MUTED, font=('Segoe UI', 7)).pack(anchor='w', padx=12)
+        tk.Entry(
+            self._video_opts_frame, textvariable=self._video_seconds,
+            bg=_WIDGET, fg=_TEXT, insertbackground=_TEXT,
+            relief='flat', font=('Segoe UI', 9),
+        ).pack(fill=tk.X, padx=12, pady=(2, 6))
+
         self._sep(sb)
 
         # modo
@@ -205,6 +237,17 @@ class MainWindow(tk.Frame):
         else:
             self._hint_lbl.config(text='Modo línea: hacé clic y arrastrá sobre la imagen para definir la zona')
 
+    def _on_input_mode_change(self):
+        if self._input_mode.get() == 'videos':
+            self._video_opts_frame.pack(fill=tk.X, after=self._vid_radio)
+        else:
+            self._video_opts_frame.pack_forget()
+        if self._folder:
+            if self._input_mode.get() == 'videos':
+                self._preview_first_video(self._folder)
+            else:
+                self._preview_first_image(self._folder)
+
     def _select_folder(self):
         folder = filedialog.askdirectory(title='Seleccionar carpeta de imágenes')
         if not folder:
@@ -213,20 +256,40 @@ class MainWindow(tk.Frame):
         label = folder if len(folder) <= 36 else '…' + folder[-33:]
         self._folder_lbl.config(text=label, fg=_TEXT)
 
-        # auto-completar ID de cámara desde el nombre de la carpeta
         if not self._camara_id.get():
             self._camara_id.set(os.path.basename(folder))
 
-        # previsualizar primera imagen
+        if self._input_mode.get() == 'videos':
+            self._preview_first_video(folder)
+        else:
+            self._preview_first_image(folder)
+
+    def _preview_first_image(self, folder):
         for fname in sorted(os.listdir(folder)):
             if os.path.splitext(fname)[1].lower() in IMAGE_EXTENSIONS:
                 try:
                     img = Image.open(os.path.join(folder, fname)).convert('RGB')
                     self._zone_canvas.set_image(img)
                     self._zone_canvas.set_mode(self._mode.get())
-                    self._hint_lbl.config(
-                        text=f'{fname}  —  dibujá la zona sobre la imagen'
-                    )
+                    self._hint_lbl.config(text=f'{fname}  —  dibujá la zona sobre la imagen')
+                except Exception:
+                    pass
+                break
+
+    def _preview_first_video(self, folder):
+        import cv2
+        for fname in sorted(os.listdir(folder)):
+            if os.path.splitext(fname)[1].lower() in VIDEO_EXTENSIONS:
+                try:
+                    cap = cv2.VideoCapture(os.path.join(folder, fname))
+                    ret, frame = cap.read()
+                    cap.release()
+                    if ret:
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        img = Image.fromarray(frame_rgb)
+                        self._zone_canvas.set_image(img)
+                        self._zone_canvas.set_mode(self._mode.get())
+                        self._hint_lbl.config(text=f'{fname}  (frame inicial)  —  dibujá la zona sobre la imagen')
                 except Exception:
                     pass
                 break
@@ -254,7 +317,7 @@ class MainWindow(tk.Frame):
 
     def _start_processing(self):
         if not self._folder:
-            messagebox.showwarning('Sin carpeta', 'Seleccioná una carpeta de imágenes primero.')
+            messagebox.showwarning('Sin carpeta', 'Seleccioná una carpeta primero.')
             return
         if self._model is None:
             messagebox.showwarning('Modelo no listo', 'El modelo aún se está cargando. Esperá un momento.')
@@ -265,7 +328,12 @@ class MainWindow(tk.Frame):
             messagebox.showwarning('Sin zona', 'Dibujá la zona sobre la imagen antes de procesar.')
             return
 
-        # En modo sin zona no se necesita imagen previa cargada para dibujar
+        seconds = []
+        if self._input_mode.get() == 'videos':
+            seconds = parse_frames(self._video_seconds.get())
+            if not seconds:
+                messagebox.showwarning('Sin frames', 'Ingresá al menos un número de frame válido (ej: 5, 100, 300).')
+                return
 
         self._results_df = None
         self._save_btn.config(state='disabled')
@@ -278,11 +346,18 @@ class MainWindow(tk.Frame):
         cam_id   = self._camara_id.get().strip()
         separate = self._separate_folders.get()
 
-        threading.Thread(
-            target=self._process_thread,
-            args=(self._folder, zone, conf, iou, cam_id, separate),
-            daemon=True,
-        ).start()
+        if self._input_mode.get() == 'videos':
+            threading.Thread(
+                target=self._process_thread_video,
+                args=(self._folder, zone, conf, iou, cam_id, separate, seconds),
+                daemon=True,
+            ).start()
+        else:
+            threading.Thread(
+                target=self._process_thread,
+                args=(self._folder, zone, conf, iou, cam_id, separate),
+                daemon=True,
+            ).start()
         self.after(100, self._poll_queue)
 
     def _process_thread(self, folder, zone, conf, iou, cam_id, separate):
@@ -292,6 +367,22 @@ class MainWindow(tk.Frame):
 
             df = process_folder(
                 folder, zone, self._model, conf, iou,
+                camara_id=cam_id,
+                separate_folders=separate,
+                on_progress=on_progress,
+            )
+            self._queue.put(('done', df))
+        except Exception as exc:
+            self._queue.put(('error', str(exc)))
+
+    def _process_thread_video(self, folder, zone, conf, iou, cam_id, separate, seconds):
+        try:
+            def on_progress(current, total, fname):
+                self._queue.put(('progress', current, total, fname))
+
+            df = process_videos_folder(
+                folder, zone, self._model, conf, iou,
+                seconds=seconds,
                 camara_id=cam_id,
                 separate_folders=separate,
                 on_progress=on_progress,
@@ -318,7 +409,14 @@ class MainWindow(tk.Frame):
                 self._results_df = df
                 self._progress['value'] = 100
                 n = len(df)
-                self._status_lbl.config(text=f'✓ {n} imagen{"es" if n != 1 else ""} procesada{"s" if n != 1 else ""}', fg=_SUCCESS)
+                if self._input_mode.get() == 'videos':
+                    self._status_lbl.config(
+                        text=f'✓ {n} frame{"s" if n != 1 else ""} · CSV guardado en carpeta',
+                        fg=_SUCCESS)
+                else:
+                    self._status_lbl.config(
+                        text=f'✓ {n} imagen{"es" if n != 1 else ""} procesada{"s" if n != 1 else ""}',
+                        fg=_SUCCESS)
                 self._process_btn.config(state='normal')
                 self._save_btn.config(state='normal')
                 still_running = False

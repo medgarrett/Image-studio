@@ -26,6 +26,28 @@ from src.zone import BboxZone, LineZone, NoZone
 TRACEABILITY_FILENAME = 'indice_trazabilidad.json'
 IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
 
+def _draw_detections(pil_image, yolo_detections, confidence_threshold: float):
+    """Dibuja bounding boxes y confianza (2 decimales) sobre la imagen para cada detección."""
+    img_bgr = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+    color = (0, 230, 118)  # verde
+
+    for det in yolo_detections.xyxy[0]:
+        x1, y1, x2, y2, conf, cls = det.tolist()
+        if conf < confidence_threshold or int(cls) != 0:
+            continue
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+
+        cv2.rectangle(img_bgr, (x1, y1), (x2, y2), color, 2)
+
+        label = f"{conf:.2f}"
+        (lw, lh), bl = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+        cv2.rectangle(img_bgr, (x1, y1 - lh - bl - 4), (x1 + lw + 4, y1), color, -1)
+        cv2.putText(img_bgr, label, (x1 + 2, y1 - bl - 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
+
+    return Image.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
+
+
 def _read_overlay(pil_image) -> tuple:
     """
     Lee hora, fecha y temperatura del overlay inferior de una imagen de trampa cámara.
@@ -105,6 +127,7 @@ def process_folder(
     iou_threshold: float,
     camara_id: str = '',
     separate_folders: bool = False,
+    show_bbox: bool = False,
     on_progress: Callable[[int, int, str], None] = None,
 ) -> pd.DataFrame:
     """
@@ -164,7 +187,11 @@ def process_folder(
 
             if separate_folders:
                 dest = carpeta_con if counts['total'] > 0 else carpeta_sin
-                shutil.copy2(img_path, os.path.join(dest, fname))
+                dest_path = os.path.join(dest, fname)
+                if show_bbox:
+                    _draw_detections(image, yolo_detections, confidence).save(dest_path)
+                else:
+                    shutil.copy2(img_path, dest_path)
 
             tdata = traceability.get(fname, {})
             effective_cam_id = tdata.get('camara_id') or camara_id
@@ -264,6 +291,7 @@ def process_videos_folder(
     seconds: list,
     camara_id: str = '',
     separate_folders: bool = False,
+    show_bbox: bool = False,
     on_progress: Callable[[int, int, str], None] = None,
 ) -> pd.DataFrame:
     """
@@ -328,7 +356,8 @@ def process_videos_folder(
                 counts = classify_detections(detections, zone, confidence)
 
                 dest = carpeta_con if counts['total'] > 0 else carpeta_sin
-                image.save(os.path.join(dest, frame_name), 'JPEG')
+                img_to_save = _draw_detections(image, yolo_detections, confidence) if show_bbox else image
+                img_to_save.save(os.path.join(dest, frame_name), 'JPEG')
 
                 if is_nozone:
                     zone_values = []

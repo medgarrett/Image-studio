@@ -45,6 +45,7 @@ class MainWindow(tk.Frame):
         self._iou = tk.DoubleVar(value=45)
         self._camara_id = tk.StringVar(value='')
         self._separate_folders = tk.BooleanVar(value=False)
+        self._show_bbox = tk.BooleanVar(value=False)
         self._input_mode = tk.StringVar(value='images')
         self._video_seconds = tk.StringVar(value='')
 
@@ -54,14 +55,39 @@ class MainWindow(tk.Frame):
     # ── Construcción de UI ────────────────────────────────────────────────────
 
     def _build_ui(self):
-        sidebar = tk.Frame(self, bg=_SIDEBAR, width=290)
-        sidebar.pack(side=tk.LEFT, fill=tk.Y)
-        sidebar.pack_propagate(False)
+        sidebar_outer = tk.Frame(self, bg=_SIDEBAR, width=300)
+        sidebar_outer.pack(side=tk.LEFT, fill=tk.Y)
+        sidebar_outer.pack_propagate(False)
+
+        # Scrollbar + canvas para sidebar scrollable
+        sb_scroll = ttk.Scrollbar(sidebar_outer, orient='vertical')
+        sb_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        sb_canvas = tk.Canvas(sidebar_outer, bg=_SIDEBAR,
+                              yscrollcommand=sb_scroll.set,
+                              highlightthickness=0)
+        sb_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb_scroll.config(command=sb_canvas.yview)
+
+        inner = tk.Frame(sb_canvas, bg=_SIDEBAR)
+        win_id = sb_canvas.create_window((0, 0), window=inner, anchor='nw')
+
+        def _on_inner_resize(e):
+            sb_canvas.configure(scrollregion=sb_canvas.bbox('all'))
+        inner.bind('<Configure>', _on_inner_resize)
+
+        def _on_canvas_resize(e):
+            sb_canvas.itemconfig(win_id, width=e.width)
+        sb_canvas.bind('<Configure>', _on_canvas_resize)
+
+        def _on_mousewheel(e):
+            sb_canvas.yview_scroll(int(-1 * (e.delta / 120)), 'units')
+        sb_canvas.bind_all('<MouseWheel>', _on_mousewheel)
 
         main = tk.Frame(self, bg=_BG)
         main.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self._build_sidebar(sidebar)
+        self._build_sidebar(inner)
         self._build_canvas_area(main)
 
     def _lbl(self, parent, text, fg=None, **kw):
@@ -182,6 +208,13 @@ class MainWindow(tk.Frame):
         tk.Checkbutton(
             sb, text='Separar en con/sin animales',
             variable=self._separate_folders,
+            bg=_SIDEBAR, fg=_TEXT, selectcolor=_WIDGET,
+            activebackground=_SIDEBAR, activeforeground=_TEXT,
+            font=('Segoe UI', 9),
+        ).pack(anchor='w', padx=14, pady=2)
+        tk.Checkbutton(
+            sb, text='Mostrar bounding boxes',
+            variable=self._show_bbox,
             bg=_SIDEBAR, fg=_TEXT, selectcolor=_WIDGET,
             activebackground=_SIDEBAR, activeforeground=_TEXT,
             font=('Segoe UI', 9),
@@ -345,22 +378,23 @@ class MainWindow(tk.Frame):
         iou      = self._iou.get() / 100.0
         cam_id   = self._camara_id.get().strip()
         separate = self._separate_folders.get()
+        show_bbox = self._show_bbox.get()
 
         if self._input_mode.get() == 'videos':
             threading.Thread(
                 target=self._process_thread_video,
-                args=(self._folder, zone, conf, iou, cam_id, separate, seconds),
+                args=(self._folder, zone, conf, iou, cam_id, separate, seconds, show_bbox),
                 daemon=True,
             ).start()
         else:
             threading.Thread(
                 target=self._process_thread,
-                args=(self._folder, zone, conf, iou, cam_id, separate),
+                args=(self._folder, zone, conf, iou, cam_id, separate, show_bbox),
                 daemon=True,
             ).start()
         self.after(100, self._poll_queue)
 
-    def _process_thread(self, folder, zone, conf, iou, cam_id, separate):
+    def _process_thread(self, folder, zone, conf, iou, cam_id, separate, show_bbox=False):
         try:
             def on_progress(current, total, fname):
                 self._queue.put(('progress', current, total, fname))
@@ -369,13 +403,14 @@ class MainWindow(tk.Frame):
                 folder, zone, self._model, conf, iou,
                 camara_id=cam_id,
                 separate_folders=separate,
+                show_bbox=show_bbox,
                 on_progress=on_progress,
             )
             self._queue.put(('done', df))
         except Exception as exc:
             self._queue.put(('error', str(exc)))
 
-    def _process_thread_video(self, folder, zone, conf, iou, cam_id, separate, seconds):
+    def _process_thread_video(self, folder, zone, conf, iou, cam_id, separate, seconds, show_bbox=False):
         try:
             def on_progress(current, total, fname):
                 self._queue.put(('progress', current, total, fname))
@@ -385,6 +420,7 @@ class MainWindow(tk.Frame):
                 seconds=seconds,
                 camara_id=cam_id,
                 separate_folders=separate,
+                show_bbox=show_bbox,
                 on_progress=on_progress,
             )
             self._queue.put(('done', df))

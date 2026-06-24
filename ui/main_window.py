@@ -48,6 +48,9 @@ class MainWindow(tk.Frame):
         self._show_bbox = tk.BooleanVar(value=False)
         self._input_mode = tk.StringVar(value='images')
         self._video_seconds = tk.StringVar(value='')
+        self._detect_motion = tk.BooleanVar(value=False)
+        self._pixel_threshold = tk.IntVar(value=30)
+        self._area_threshold = tk.DoubleVar(value=2.0)
 
         self._build_ui()
         self._load_model_async()
@@ -139,7 +142,7 @@ class MainWindow(tk.Frame):
                        command=self._on_input_mode_change)
         self._vid_radio.pack(anchor='w', padx=20, pady=(1, 4))
 
-        # Panel de segundos — se muestra solo en modo videos
+        # Panel de opciones de video — se muestra solo en modo videos
         self._video_opts_frame = tk.Frame(sb, bg=_SIDEBAR)
         self._lbl(self._video_opts_frame, 'Frames a extraer').pack(anchor='w', padx=12, pady=(2, 0))
         self._lbl(self._video_opts_frame, 'Ej: 5, 100, 300  (número de frame)',
@@ -149,6 +152,51 @@ class MainWindow(tk.Frame):
             bg=_WIDGET, fg=_TEXT, insertbackground=_TEXT,
             relief='flat', font=('Segoe UI', 9),
         ).pack(fill=tk.X, padx=12, pady=(2, 6))
+
+        ttk.Separator(self._video_opts_frame, orient='horizontal').pack(fill=tk.X, padx=8, pady=4)
+
+        self._motion_chk = tk.Checkbutton(
+            self._video_opts_frame, text='Detectar movimiento',
+            variable=self._detect_motion,
+            bg=_SIDEBAR, fg=_TEXT, selectcolor=_WIDGET,
+            activebackground=_SIDEBAR, activeforeground=_TEXT,
+            font=('Segoe UI', 9),
+            command=self._on_detect_motion_change,
+        )
+        self._motion_chk.pack(anchor='w', padx=14, pady=(0, 4))
+
+        # Sub-panel de parámetros — visible solo cuando "Detectar movimiento" está activo
+        self._motion_opts_frame = tk.Frame(self._video_opts_frame, bg=_SIDEBAR)
+
+        self._lbl(self._motion_opts_frame, 'Sensibilidad pixel').pack(anchor='w', padx=12, pady=(2, 0))
+        self._lbl(self._motion_opts_frame, 'Umbral de diferencia por pixel (1-100)',
+                  fg=_MUTED, font=('Segoe UI', 7)).pack(anchor='w', padx=12)
+        pix_row = tk.Frame(self._motion_opts_frame, bg=_SIDEBAR)
+        pix_row.pack(fill=tk.X, padx=12)
+        tk.Scale(pix_row, from_=5, to=100, orient=tk.HORIZONTAL,
+                 variable=self._pixel_threshold,
+                 bg=_SIDEBAR, fg=_TEXT, troughcolor=_WIDGET,
+                 highlightthickness=0, showvalue=False,
+                 ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._pix_lbl = self._lbl(pix_row, '30', width=4, anchor='e', bg=_SIDEBAR)
+        self._pix_lbl.pack(side=tk.LEFT)
+        self._pixel_threshold.trace_add('write',
+            lambda *_: self._pix_lbl.config(text=str(self._pixel_threshold.get())))
+
+        self._lbl(self._motion_opts_frame, 'Área mínima de cambio').pack(anchor='w', padx=12, pady=(6, 0))
+        self._lbl(self._motion_opts_frame, '% de pixels de la ROI que deben cambiar',
+                  fg=_MUTED, font=('Segoe UI', 7)).pack(anchor='w', padx=12)
+        area_row = tk.Frame(self._motion_opts_frame, bg=_SIDEBAR)
+        area_row.pack(fill=tk.X, padx=12, pady=(0, 6))
+        tk.Scale(area_row, from_=0.5, to=20.0, orient=tk.HORIZONTAL,
+                 variable=self._area_threshold, resolution=0.5,
+                 bg=_SIDEBAR, fg=_TEXT, troughcolor=_WIDGET,
+                 highlightthickness=0, showvalue=False,
+                 ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._area_lbl = self._lbl(area_row, '2.0%', width=5, anchor='e', bg=_SIDEBAR)
+        self._area_lbl.pack(side=tk.LEFT)
+        self._area_threshold.trace_add('write',
+            lambda *_: self._area_lbl.config(text=f'{self._area_threshold.get():.1f}%'))
 
         self._sep(sb)
 
@@ -281,6 +329,12 @@ class MainWindow(tk.Frame):
             else:
                 self._preview_first_image(self._folder)
 
+    def _on_detect_motion_change(self):
+        if self._detect_motion.get():
+            self._motion_opts_frame.pack(fill=tk.X, after=self._motion_chk)
+        else:
+            self._motion_opts_frame.pack_forget()
+
     def _select_folder(self):
         folder = filedialog.askdirectory(title='Seleccionar carpeta de imágenes')
         if not folder:
@@ -379,11 +433,15 @@ class MainWindow(tk.Frame):
         cam_id   = self._camara_id.get().strip()
         separate = self._separate_folders.get()
         show_bbox = self._show_bbox.get()
+        detect_motion = self._detect_motion.get()
+        pixel_thr = self._pixel_threshold.get()
+        area_thr  = self._area_threshold.get()
 
         if self._input_mode.get() == 'videos':
             threading.Thread(
                 target=self._process_thread_video,
-                args=(self._folder, zone, conf, iou, cam_id, separate, seconds, show_bbox),
+                args=(self._folder, zone, conf, iou, cam_id, separate, seconds,
+                      show_bbox, detect_motion, pixel_thr, area_thr),
                 daemon=True,
             ).start()
         else:
@@ -410,7 +468,8 @@ class MainWindow(tk.Frame):
         except Exception as exc:
             self._queue.put(('error', str(exc)))
 
-    def _process_thread_video(self, folder, zone, conf, iou, cam_id, separate, seconds, show_bbox=False):
+    def _process_thread_video(self, folder, zone, conf, iou, cam_id, separate, seconds,
+                              show_bbox=False, detect_motion=False, pixel_thr=30, area_thr=2.0):
         try:
             def on_progress(current, total, fname):
                 self._queue.put(('progress', current, total, fname))
@@ -421,6 +480,9 @@ class MainWindow(tk.Frame):
                 camara_id=cam_id,
                 separate_folders=separate,
                 show_bbox=show_bbox,
+                detect_motion=detect_motion,
+                pixel_threshold=pixel_thr,
+                area_threshold=area_thr,
                 on_progress=on_progress,
             )
             self._queue.put(('done', df))

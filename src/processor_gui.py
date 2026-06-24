@@ -20,6 +20,7 @@ import pandas as pd
 from PIL import Image
 
 from src.detector import yolo_detections_to_norfair_detections
+from src.motion_detector import MotionDetector
 from src.spatial_analysis import classify_detections
 from src.zone import BboxZone, LineZone, NoZone
 
@@ -292,14 +293,20 @@ def process_videos_folder(
     camara_id: str = '',
     separate_folders: bool = False,
     show_bbox: bool = False,
+    detect_motion: bool = False,
+    pixel_threshold: int = 30,
+    area_threshold: float = 2.0,
     on_progress: Callable[[int, int, str], None] = None,
 ) -> pd.DataFrame:
     """
     Procesa todos los videos de la carpeta.
-    Extrae frames en los segundos indicados, los clasifica y devuelve un DataFrame.
-    Los frames se guardan como {video}_{segundo}.jpg en la misma carpeta.
-    Siempre crea subcarpetas con_animales/ y sin_animales/ para los frames extraídos.
-    El CSV se guarda automáticamente como resultados_video.csv en la misma carpeta.
+    Extrae frames en los índices indicados, los clasifica y devuelve un DataFrame.
+    Siempre crea subcarpetas con_animales/ y sin_animales/.
+    El CSV se guarda automáticamente como resultados_video.csv en la carpeta.
+
+    Si detect_motion=True, compara cada frame contra el primero del mismo video
+    dentro de la ROI (BboxZone) o imagen completa (LineZone/NoZone).
+    Agrega columnas Delta_score y Movimiento_detectado al resultado.
     """
     video_files = list_videos(folder)
     if not video_files or not seconds:
@@ -315,9 +322,12 @@ def process_videos_folder(
     else:
         zone_cols = ['Lado_izquierdo', 'Lado_derecho']
 
-    columns = ['Video', 'Frame', 'Imagen', 'Hora', 'Fecha', 'Temperatura', 'Camara_ID', 'Cant_total'] + zone_cols
+    motion_cols = ['Delta_score', 'Movimiento_detectado'] if detect_motion else []
+    columns = (
+        ['Video', 'Frame', 'Imagen', 'Hora', 'Fecha', 'Temperatura', 'Camara_ID', 'Cant_total']
+        + zone_cols + motion_cols
+    )
 
-    # Siempre separar frames en con/sin animales
     carpeta_con = os.path.join(folder, 'con_animales')
     carpeta_sin = os.path.join(folder, 'sin_animales')
     os.makedirs(carpeta_con, exist_ok=True)
@@ -332,10 +342,11 @@ def process_videos_folder(
         video_fname = os.path.basename(video_path)
         video_stem = os.path.splitext(video_fname)[0]
 
+        motion_detector = None  # reset detector for each video
+
         for frame_index in seconds:
             current += 1
             frame_name = f"{video_stem}_{frame_index}.jpg"
-            frame_path = os.path.join(folder, frame_name)
 
             try:
                 image = extract_frame_at_index(video_path, frame_index)
@@ -344,6 +355,18 @@ def process_videos_folder(
                     if on_progress:
                         on_progress(current, total, f"[omitido] {frame_name}")
                     continue
+
+                # Motion detection: primer frame → referencia, resto → comparar
+                delta_score = 0.0
+                movimiento = False
+                if detect_motion:
+                    roi = zone if is_bbox else None
+                    if motion_detector is None:
+                        motion_detector = MotionDetector(image, pixel_threshold, area_threshold)
+                    else:
+                        result = motion_detector.compare(image, roi)
+                        delta_score = result['delta_score']
+                        movimiento = result['movimiento']
 
                 yolo_detections = model(
                     image,
@@ -355,7 +378,7 @@ def process_videos_folder(
                 detections = yolo_detections_to_norfair_detections(yolo_detections, track_points='bbox')
                 counts = classify_detections(detections, zone, confidence)
 
-                dest = carpeta_con if counts['total'] > 0 else carpeta_sin
+                dest = carpeta_con if (counts['total'] > 0 or movimiento) else carpeta_sin
                 img_to_save = _draw_detections(image, yolo_detections, confidence) if show_bbox else image
                 img_to_save.save(os.path.join(dest, frame_name), 'JPEG')
 
@@ -367,7 +390,11 @@ def process_videos_folder(
                     zone_values = [counts['izquierda'], counts['derecha']]
 
                 hora, fecha, temperatura = _read_overlay(image)
-                row = [video_fname, frame_index, frame_name, hora, fecha, temperatura, camara_id, counts['total']] + zone_values
+                motion_values = [delta_score, movimiento] if detect_motion else []
+                row = (
+                    [video_fname, frame_index, frame_name, hora, fecha, temperatura, camara_id, counts['total']]
+                    + zone_values + motion_values
+                )
                 rows.append(row)
 
             except Exception as e:
